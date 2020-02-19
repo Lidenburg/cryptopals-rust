@@ -1936,6 +1936,7 @@ mod set4 {
     }
 
     /// Takes like 30 minutes to run... insane...
+    /// Challenge 31 and 32
     pub fn challenge_31() {
         const TRIES_PER_BYTE: usize = 5;
         let secret = "key".as_bytes();
@@ -2081,6 +2082,6 @@ fn main() {
     set4::challenge_28();
     set4::challenge_29();
     set4::challenge_30();
-    set4::challenge_31();
+    set4::challenge_31();   // Sloow
     println!("Set 4 complete!\n");
 }
