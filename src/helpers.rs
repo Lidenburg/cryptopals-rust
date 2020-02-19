@@ -1,7 +1,14 @@
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read};
 use openssl::symm::{decrypt, encrypt, Cipher, Crypter, Mode};
+#[path = "sha1/mod.rs"]
+mod sha1;
+#[path = "md4/mod.rs"]
+mod md4;
+
 
 pub fn hex_str_to_bytes(in_str: &String) -> Vec<u8>{
 	let mut res: Vec<u8> = Vec::new();
@@ -380,10 +387,11 @@ pub fn aes_128_cbc_encrypt(plaintext: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8>{
 pub fn aes_128_cbc_decrypt(ciphertext: &[u8], key: &[u8], iv: &[u8]) -> Result<Vec<u8>, String>{
     let mut cipher_xor = vec![0; 16];
     let mut result = Vec::with_capacity(ciphertext.len());   // Fast at allocation time and minimal reallocation
-    cipher_xor.copy_from_slice(iv); // Should be the IV first time only
 
     assert!(key.len() == 16);
     assert!(iv.len() == 16);
+
+    cipher_xor.copy_from_slice(iv); // Should be the IV first time only
 
     for chunk in ciphertext.chunks(16){
         let mut decrypter = Crypter::new(
@@ -416,8 +424,68 @@ pub fn aes_128_cbc_decrypt(ciphertext: &[u8], key: &[u8], iv: &[u8]) -> Result<V
     return result;
 }
 
+pub fn aes_128_cbc_decrypt_no_unpad(ciphertext: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
+    let mut cipher_xor = vec![0; 16];
+    let mut result = Vec::with_capacity(ciphertext.len());   // Fast at allocation time and minimal reallocation
+
+    assert!(key.len() == 16);
+    assert!(iv.len() == 16);
+
+    cipher_xor.copy_from_slice(iv); // Should be the IV first time only
+
+    for chunk in ciphertext.chunks(16){
+        let mut decrypter = Crypter::new(
+            Cipher::aes_128_ecb(),
+            Mode::Decrypt,
+            key,
+            None
+            ).expect("failed creating decrypter for aes 128 ecb");
+
+        let mut temp_out = vec![1; 16 * 2];
+        decrypter.update(chunk, &mut temp_out).expect("cbc decrypter.update failed");
+        //println!("decrypted: {:x?}", temp_out);
+        temp_out.truncate(16);
+        //println!("decrypted truncated: {:x?}", temp_out);
+
+        let mut plaintext = repeating_key_xor(&cipher_xor, &temp_out);
+        //println!("xored: {:x?}", plaintext);
+        //println!("xored: {}", std::str::from_utf8(&plaintext).expect("failed decoding decrypted str"));
+
+        result.append(&mut plaintext);
+
+        cipher_xor = chunk.to_vec();
+    }
+
+    assert!(result.len() % 16 == 0);
+
+    //println!("cbc_decrypt last byte before unpad: {:x}", result.last().unwrap());
+    //let result = pkcs7_unpad(result);
+
+    return result;
+}
+
 pub fn aes_128_ctr_encrypt(plaintext: &[u8], key: &[u8], nonce: u64) -> Vec<u8> {
     let mut counter = 0u64;
+    let mut encrypted = Vec::with_capacity(plaintext.len());
+
+    for chunk in plaintext.chunks(16) {
+        let mut to_encr = nonce.to_le_bytes().to_vec();
+        to_encr.extend(&counter.to_le_bytes());
+
+        let encd = aes_128_ecb_encrypt(&to_encr, key);
+
+        for (idx, b) in chunk.iter().enumerate() {
+            encrypted.push(b ^ encd[idx]);
+        }
+
+        counter += 1;
+    }
+
+    return encrypted;
+}
+
+pub fn aes_128_ctr_crypt_with_start_counter(plaintext: &[u8], key: &[u8], nonce: u64, counter_start: u64) -> Vec<u8> {
+    let mut counter = counter_start;
     let mut encrypted = Vec::with_capacity(plaintext.len());
 
     for chunk in plaintext.chunks(16) {
@@ -659,4 +727,180 @@ pub fn mt_untemper(val: u32) -> u32 {
 
     return y0;
     
+}
+
+pub fn sha1sum(to_sum: &[u8]) -> [u8; 20] {
+    sha1::Sha1::from(&to_sum).digest().bytes()
+}
+
+/// Returns the padding bytes that will be used in sha1
+pub fn sha1_padding_for(data: &[u8]) -> Vec<u8> {
+    sha1::Sha1::get_padding_bytes(data)
+}
+
+/// Returns the state from a SHA1 output
+pub fn sha1_state_from(hash: [u8; 20]) -> [u32; 5] {
+    let mut tmparr = [0u8; 4];
+
+    tmparr.clone_from_slice(&hash[0..4]);
+    let val1 = u32::from_be_bytes(tmparr);
+
+    tmparr.clone_from_slice(&hash[4..8]);
+    let val2 = u32::from_be_bytes(tmparr);
+
+    tmparr.clone_from_slice(&hash[8..12]);
+    let val3 = u32::from_be_bytes(tmparr);
+
+    tmparr.clone_from_slice(&hash[12..16]);
+    let val4 = u32::from_be_bytes(tmparr);
+
+    tmparr.clone_from_slice(&hash[16..20]);
+    let val5 = u32::from_be_bytes(tmparr);
+
+    [val1, val2, val3, val4, val5]
+    //sha1::Sha1::from(&data).digest().u32s()
+}
+
+/// Start pos should always be divisible by 64. no?
+pub fn sha1_append(state: [u32; 5], append_data: &[u8], start_pos: usize) -> [u8; 20] {
+    let mut hasher = sha1::Sha1::new();
+    hasher.update("A".repeat(start_pos).as_bytes());
+    // sha object is now in a good internal state.
+
+    // Proceed with our own state
+    hasher.update_with_state(append_data, state);
+
+    return hasher.digest().bytes();
+}
+
+pub fn sha1_from_state(state: [u32; 5], data: &[u8], len: u64) -> [u8; 20] {
+    let mut hasher = sha1::Sha1::new_with_state(state, len);
+    hasher.update(data);
+
+    return hasher.digest().bytes();
+}
+
+pub fn create_sha1_mac(secret: &[u8], message: &[u8]) -> [u8; 20] {
+    let mut combined = vec![0; secret.len()];
+    combined.clone_from_slice(secret);
+    combined.extend(message);
+
+    let digest = sha1sum(&combined);
+
+    return digest;
+}
+
+pub fn verify_sha1_mac(mac: &[u8; 20], secret: &[u8], message: &[u8]) -> bool {
+    return mac == &create_sha1_mac(secret, message)[..];
+}
+
+pub fn md4sum(data: &[u8]) -> [u8; 16] {
+    let sum = md4::md4(data.to_vec());
+
+    let [b00, b01, b02, b03] = sum[0].to_be_bytes();
+    let [b10, b11, b12, b13] = sum[1].to_be_bytes();
+    let [b20, b21, b22, b23] = sum[2].to_be_bytes();
+    let [b30, b31, b32, b33] = sum[3].to_be_bytes();
+
+    [b00, b01, b02, b03, b10, b11, b12, b13, b20, b21, b22, b23, b30, b31, b32, b33]
+}
+
+/// Returns the padding bytes that will be used in md4
+pub fn md4_padding_for(data: &[u8]) -> Vec<u8> {
+    md4::get_padding_bytes(data.to_vec())
+}
+
+pub fn create_md4_mac(secret: &[u8], message: &[u8]) -> [u8; 16] {
+    let mut combined = vec![0; secret.len()];
+    combined.clone_from_slice(secret);
+    combined.extend(message);
+
+    let digest = md4sum(&combined);
+
+    return digest;
+}
+
+pub fn verify_md4_mac(mac: &[u8; 16], secret: &[u8], message: &[u8]) -> bool {
+    return mac == &create_md4_mac(secret, message)[..];
+}
+
+/// Returns the state from a MD4 output
+pub fn md4_state_from(hash: [u8; 16]) -> [u32; 4] {
+    let mut tmparr = [0u8; 4];
+
+    tmparr.clone_from_slice(&hash[0..4]);
+    let val1 = u32::from_le_bytes(tmparr);
+
+    tmparr.clone_from_slice(&hash[4..8]);
+    let val2 = u32::from_le_bytes(tmparr);
+
+    tmparr.clone_from_slice(&hash[8..12]);
+    let val3 = u32::from_le_bytes(tmparr);
+
+    tmparr.clone_from_slice(&hash[12..16]);
+    let val4 = u32::from_le_bytes(tmparr);
+
+    [val1, val2, val3, val4]
+    //sha1::Sha1::from(&data).digest().u32s()
+}
+
+pub fn md4_from_state(state: [u32; 4], data: &[u8], len: usize) -> [u8; 16] {
+    let sum = md4::md4_with_state(data, state, len);
+
+    // Orig
+    let [b00, b01, b02, b03] = sum[0].to_be_bytes();
+    let [b10, b11, b12, b13] = sum[1].to_be_bytes();
+    let [b20, b21, b22, b23] = sum[2].to_be_bytes();
+    let [b30, b31, b32, b33] = sum[3].to_be_bytes();
+
+
+    [b00, b01, b02, b03, b10, b11, b12, b13, b20, b21, b22, b23, b30, b31, b32, b33]
+}
+
+fn hmac_sha1_pad(data: &[u8]) -> [u8; 64] {
+    let mut res = [0u8; 64];
+    assert!(data.len() <= 64);
+
+    for i in 0..data.len() {
+        res[i] = data[i];
+    }
+    for i in data.len()..64 {
+        res[i] = 0;
+    }
+
+    return res;
+}
+
+pub fn create_sha1_hmac(secret: &[u8], message: &[u8]) -> [u8; 20] {
+    let secret = if secret.len() > 64 {
+        sha1sum(secret).to_vec()
+    } else {
+        secret.to_vec()
+    };
+
+    let secret = if secret.len() < 64 {
+        hmac_sha1_pad(&secret).to_vec()
+    } else {
+        secret.to_vec()
+    };
+
+    let o_key_pad = repeating_key_xor(&secret, "\x5c".repeat(64).as_bytes());
+    let i_key_pad = repeating_key_xor(&secret, "\x36".repeat(64).as_bytes());
+
+    let mut inner = Vec::new();
+    inner.extend(&i_key_pad);
+    inner.extend(message);
+    let inner_hash = sha1sum(&inner);
+
+    let mut outer = Vec::new();
+    outer.extend(&o_key_pad);
+    outer.extend(&inner_hash);
+
+    let outer_hash = sha1sum(&outer);
+
+    outer_hash
+}
+
+pub fn verify_sha1_hmac(hmac: &[u8; 20], secret: &[u8], message: &[u8]) -> bool {
+    hmac == &create_sha1_hmac(secret, message)
 }

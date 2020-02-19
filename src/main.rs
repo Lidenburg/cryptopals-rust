@@ -1514,6 +1514,532 @@ mod set3 {
     }
 }
 
+mod set4 {
+    use super::helpers;
+    use std::io::{stdout, Write};
+    use std::time::{SystemTime};
+    use std::{thread, time};
+    use std::time::Duration;
+
+    //use super::kv_parse as kv_parse;
+
+    /// Doesn't expect offset to be 0 indexed.
+    /// Doesn't return anything, but mutates the ciphertext in first argument.
+    fn edit(ciphertext: &mut Vec<u8>, key: &[u8], nonce: u64, offset: usize, newtext: &[u8]) {
+        let newlen = newtext.len();
+        let cipherlen = ciphertext.len();
+        let ctr_start: u64 = (offset / 16) as u64;
+        let byte_offset = offset % 16;
+
+        //println!("offset: {}\tnewlen: {}\tcipherlen: {}", offset, newlen, cipherlen);
+        if offset + newlen > cipherlen {
+            panic!("Tried to edit outside of the existing ciphertext length");
+        }
+        //println!("newtext: {:x?}", newtext);
+
+
+        //println!("decrypting bytes at range {}..{}", (ctr_start * 16) as usize, (ctr_start * 16) as usize + newlen);
+        let mut decrypted = helpers::aes_128_ctr_crypt_with_start_counter(
+            &ciphertext[(ctr_start * 16) as usize..(ctr_start * 16) as usize + newlen + byte_offset], key, nonce, ctr_start);
+
+        //println!("decrypted len: {}\tnewlen: {}", decrypted.len(), newlen);
+        assert!(decrypted.len() == newlen + byte_offset);
+
+        //println!("decrypted bytes at offset {}: {:x?}", offset, &decrypted[byte_offset..]);
+        //let as_str = std::str::from_utf8(&decrypted).expect("Something went bad in edit");
+        //println!("decrypted bytes at offset {}: \"{}\"", offset, &as_str[byte_offset..byte_offset + newlen]);
+
+        let chunk_of_interest = &mut decrypted[byte_offset..];
+        //println!("chunk_of_interest len: {}\nbyte_offset: {}", chunk_of_interest.len(), byte_offset);
+        //println!("chunk_of_interest: {:x?}", chunk_of_interest);
+
+        for (idx, c) in newtext.iter().enumerate() {
+            //println!("idx: {}\tc: {:x}", idx, c);
+            chunk_of_interest[idx] = *c;
+        }
+
+        //println!("chunk_of_interest after: {:x?}", chunk_of_interest);
+        //println!("decrypted after: {:x?}", &decrypted[byte_offset..]);
+
+        let re_encrypted = helpers::aes_128_ctr_crypt_with_start_counter(&decrypted, key, nonce, ctr_start);
+        //println!("re_encrypted({}): {:x?}", re_encrypted.len(), re_encrypted);
+
+        for (i, j) in (offset..offset + newlen).zip(byte_offset..byte_offset + newlen) {
+            //println!("i: {}\tj: {}", i, j);
+            ciphertext[i as usize] = re_encrypted[j as usize];
+        }
+    }
+
+    pub fn challenge_25() {
+        let raw = helpers::read_in_entire_file("25.txt");
+        let as_str = std::str::from_utf8(&raw).unwrap();
+        let raw = as_str.replace("\n", "");
+        let raw = helpers::b64_decode(&raw);
+        let raw = helpers::aes_128_ecb_decrypt(&raw, b"YELLOW SUBMARINE");
+
+        let mut rng = helpers::Rand::new(1337);
+        let key = rng.rand_u8_vec(16);
+
+        let mut ciphertext = helpers::aes_128_ctr_encrypt(&raw, &key, 0);
+        let orig_ciphertext = ciphertext.clone();
+
+        //edit(&mut ciphertext, &key, 0, 1, b"123456789abcde");
+
+        // The easy part left now.
+        let known_as = "A".repeat(ciphertext.len()).into_bytes();
+        let mut keystream = Vec::with_capacity(known_as.len());
+
+        edit(&mut ciphertext, &key, 0, 0, &known_as);
+
+        for i in 0..known_as.len() {
+            keystream.push(ciphertext[i] ^ known_as[i]);
+        }
+
+        let mut decrypted = Vec::with_capacity(known_as.len());
+
+        for i in 0..known_as.len() {
+            decrypted.push(orig_ciphertext[i] ^ keystream[i]);
+        }
+
+        assert!(decrypted == raw);
+        println!("Challenge 25: Successful! Broke AES CTR mode with edit function");
+
+    }
+
+    // The correct way this time
+    pub fn challenge_26(){
+        fn encrypter(user_str: &str) -> Vec<u8> {
+            let mut rng = helpers::Rand::new(1337);
+            let key = rng.rand_u8_vec(16);
+
+            let user_str = user_str.replace(";", "");
+            let user_str = user_str.replace("=", "");
+
+            let preappended = "comment1=cooking%20MCs;userdata=".to_string() + &user_str + ";comment2=%20like%20a%20pound%20of%20bacon";
+
+            //println!("preappended: {}", preappended);
+
+            helpers::aes_128_ctr_encrypt(preappended.as_bytes(), &key, 0)
+        }
+        fn decrypter_oracle(ciphertext: &[u8]) -> Result<bool, String> {
+            let mut rng = helpers::Rand::new(1337);
+            let key = rng.rand_u8_vec(16);
+
+            let decrypted = helpers::aes_128_ctr_decrypt(ciphertext, &key, 0);
+            //let decrypted = match decres {
+            //    Ok(v) => v,
+            //    Err(e) => return Err(e),
+            //};
+
+            //println!("decrypter_oracle: last byte of last block: {:#02x}", decrypted.last().unwrap());
+            //println!("decrypter_oracle: decrypted: {:?}", decrypted);
+
+            // There will be completely scrambled blocks so need to force rust
+            // to use it as a string anyway
+            let dec_str = String::from_utf8_lossy(&decrypted);
+
+            //println!("decrypter_oracle: decrypted as string: {}", dec_str);
+
+            if dec_str.contains(";admin=true;") {
+                return Ok(true);
+            } else {
+                return Ok(false);
+            }
+        }
+        print!("Challenge 26: ");
+        let _ = stdout().flush();
+
+        // Start of actual code
+        // Goal is to swap the A's for ';' and '='
+        let mut encd = encrypter("RealDataAadminAtrue");   // Eats invalid characters
+        
+        // TODO: do the magic here
+        let tmp = b"comment1=cooking%20MCs;userdata=RealDataABC";
+        //println!("tmp: {:x}", &tmp["comment1=cooking%20MCs;userdata=".len() + "RealData".len()]);
+        assert!(tmp["comment1=cooking%20MCs;userdata=".len() + "RealData".len()] == 0x41);
+        let mut got_it = false;
+
+        for guess in 0..std::u16::MAX {
+            let [b1, b2] = guess.to_le_bytes();
+
+            encd["comment1=cooking%20MCs;userdata=".len() + "RealData".len()] = b1;
+            encd["comment1=cooking%20MCs;userdata=".len() + "RealDataAadmin".len()] = b2;
+
+            if let Ok(true) = decrypter_oracle(&encd) {
+                got_it = true;
+                break;
+            }
+        }
+
+        if !got_it {
+            panic!("Failed!");
+        }
+
+        println!("Successful! Created an admin profile by bitflipping AES CTR mode ciphertext");
+    }
+    
+    pub fn challenge_27() {
+        fn encrypter(user_str: &str) -> Vec<u8> {
+            let key = "YELLOW SUBMARINE".as_bytes();
+            let iv = &key;
+
+            let user_str = user_str.replace(";", "");
+            let user_str = user_str.replace("=", "");
+
+            //println!("preappended: {}", preappended);
+
+            helpers::aes_128_cbc_encrypt(user_str.as_bytes(), &key, iv)
+        }
+        fn decrypter_oracle(ciphertext: &[u8]) -> Result<String, Vec<u8>> {
+            let key = "YELLOW SUBMARINE".as_bytes();
+            let iv = &key;
+
+            let decres = helpers::aes_128_cbc_decrypt_no_unpad(ciphertext, &key, iv);
+        
+            let unpadded = helpers::pkcs7_unpad(decres.clone());
+
+            let decrypted = match unpadded {
+                Ok(v) => v,
+                Err(_) => return Err(decres),
+            };
+
+            let dec_str = std::str::from_utf8(&decrypted);
+
+            match dec_str {
+                Ok(v) => return Ok(v.to_string()),
+                Err(_) => return Err(decrypted),
+            }
+        }
+
+        let enc_str = "A".repeat(16 * 3);
+        let mut encd = encrypter(&enc_str);
+
+        /*************************
+        * Start of attacker code *
+        **************************/
+
+        let zeroes = vec![0; 16];
+        encd.splice(16..32, zeroes.iter().cloned());
+        let mut first_16 = vec![0; 16];
+        first_16.clone_from_slice(&encd[..16]);
+
+        encd.splice(32..32 + 16, first_16.iter().cloned());
+        let attacker_modified = &encd;
+
+        /*************************
+        * End of attacker code *
+        **************************/
+
+        // Start of receiver code
+        let decres = decrypter_oracle(attacker_modified);
+
+        let dec_err = match decres {
+            Ok(_) => panic!("Not supposed to be ok"),
+            Err(v) => v,
+        };
+
+        /*******************************
+        * Start of attacker code again *
+        *******************************/
+
+        let p1 = &dec_err[..16];
+        let p2 = &dec_err[32..32+16];
+
+        let key = helpers::repeating_key_xor(p1, p2);
+        //let as_str = std::str::from_utf8(&key).unwrap();
+        //println!("xored as string: \"{}\"", as_str);
+
+        assert!(key == b"YELLOW SUBMARINE");
+        println!("Challenge 27: Successful! Got key from MitM AES CBC key=IV scenario");
+    }
+
+    pub fn challenge_28() {
+        let secret = b"SUPA SEKRIT";
+        let message = b"YELLOW SUBMARINE";
+        let mac = helpers::create_sha1_mac(secret, message);
+        //println!("mac: {:x?}", mac);
+        //println!("verified: {}", helpers::verify_mac(&mac, secret, message));
+        assert!(helpers::verify_sha1_mac(&mac, secret, message));
+
+        let message2 = b"ORANGE SUBMARINE";
+        //println!("verified: {}", helpers::verify_mac(&mac, secret, message2));
+        assert!(!helpers::verify_sha1_mac(&mac, secret, message2));
+
+        let secret2 = b"BAD GUESS";
+        //println!("verified: {}", helpers::verify_mac(&mac, secret2, message));
+        assert!(!helpers::verify_sha1_mac(&mac, secret2, message));
+
+        println!("Challenge 28: Successful! Have a basic SHA-1 MAC working");
+
+    }
+
+    pub fn challenge_29() {
+        let secret = "SUPASUPA SEKR1T".as_bytes();
+        let msg = "comment1=cooking%20MCs;userdata=foo;comment2=%20like%20a%20pound%20of%20bacon".as_bytes();
+        let mac = helpers::create_sha1_mac(&secret, &msg);
+
+        let mut new_msg = Vec::new();
+        new_msg.extend(msg);
+        new_msg.extend(helpers::sha1_padding_for(&msg));
+        new_msg.extend(";admin=true".as_bytes());
+
+        let tmpsum = helpers::sha1sum(&msg);
+        let tmpstate = helpers::sha1_state_from(tmpsum);
+        let cont_sum = helpers::sha1_from_state(tmpstate, b";admin=true", (((msg.len() / 64) + (msg.len() % 64 != 0) as usize) * 64) as u64);
+        
+        let mut tmp = vec![0; msg.len()];
+        tmp.copy_from_slice(&msg);
+        tmp.extend(helpers::sha1_padding_for(&msg));
+        tmp.extend(";admin=true".as_bytes());
+
+        let real_sum = helpers::sha1sum(&tmp);
+        assert!(real_sum == cont_sum);
+        //println!("Have a working length extension attack!");
+
+        assert!(helpers::verify_sha1_mac(&mac, &secret, &msg) == true);
+        let start_state = helpers::sha1_state_from(mac);
+        //println!("mac: {:x?}", mac);
+
+        let mut suc = false;
+
+        //let mut tmp = vec![0; msg.len()];
+        let mut tmp = Vec::new();
+        tmp.extend(secret);
+        tmp.extend(msg);
+
+        let mut tmp2 = Vec::new();
+        tmp2.extend(secret);
+        tmp2.extend(msg);
+
+        tmp.extend(helpers::sha1_padding_for(&tmp2));
+        tmp.extend(";admin=true".as_bytes());
+
+        for i in 0..40 {
+            let new_mac = helpers::sha1_from_state(
+                    start_state,
+                    ";admin=true".as_bytes(),
+                    ((((msg.len() + i) / 64) + ((msg.len() + i) % 64 != 0) as usize) * 64) as u64
+                );
+
+
+            let mut l_new_msg = Vec::new();
+            let tmp_secret = vec![0x41; i as usize];    // Modeling secret
+            l_new_msg.extend(msg);
+
+            let mut tmp_pad = Vec::new();
+            tmp_pad.extend(&tmp_secret);
+            tmp_pad.extend(msg);
+
+            l_new_msg.extend(helpers::sha1_padding_for(&tmp_pad));
+            l_new_msg.extend(";admin=true".as_bytes());
+
+            if helpers::verify_sha1_mac(&new_mac, &secret, &l_new_msg) == true {
+                let tmpstr = String::from_utf8_lossy(&l_new_msg);
+                if tmpstr.contains(";admin=true") {
+                    suc = true;
+                } else {
+                    panic!("FAAIL! but with correct mac ...?");
+                }
+            }
+        }
+
+
+        assert!(suc);
+        println!("Challenge 29: Successful! Forged a SHA1 mac with a length extension");
+    }
+
+    /// MD4 has some weird endianness stuff, jeeeez
+    pub fn challenge_30() {
+        {
+        // Some sanity checks
+        let secret = b"SUPA SEKRIT";
+        let message = b"YELLOW SUBMARINE";
+        let mac = helpers::create_md4_mac(secret, message);
+        assert!(helpers::verify_md4_mac(&mac, secret, message));
+        let message2 = b"ORANGE SUBMARINE";
+        assert!(!helpers::verify_md4_mac(&mac, secret, message2));
+        let secret2 = b"BAD GUESS";
+        assert!(!helpers::verify_md4_mac(&mac, secret2, message));
+        }
+        
+        let secret = "SUPASUPA SEKR1T".as_bytes();
+        let msg = "comment1=cooking%20MCs;userdata=foo;comment2=%20like%20a%20pound%20of%20bacon".as_bytes();
+        let mac = helpers::create_md4_mac(&secret, &msg);
+
+        let start_state = helpers::md4_state_from(mac);
+        //println!("mac: {:x?}", mac);
+
+        let mut suc = false;
+
+        //let mut tmp = vec![0; msg.len()];
+        let mut tmp = Vec::new();
+        tmp.extend(secret);
+        tmp.extend(msg);
+
+        let mut tmp2 = Vec::new();
+        tmp2.extend(secret);
+        tmp2.extend(msg);
+
+        tmp.extend(helpers::md4_padding_for(&tmp2));
+        tmp.extend(";admin=true".as_bytes());
+
+        for i in 0..40 {
+            let new_mac = helpers::md4_from_state(
+                    start_state,
+                    ";admin=true".as_bytes(),
+                    (((msg.len() + i) / 64) + ((msg.len() + i) % 64 != 0) as usize) * 64
+                );
+
+
+            let mut l_new_msg = Vec::new();
+            let tmp_secret = vec![0x41; i as usize];    // Modeling secret
+            l_new_msg.extend(msg);
+
+            let mut tmp_pad = Vec::new();
+            tmp_pad.extend(&tmp_secret);
+            tmp_pad.extend(msg);
+
+            l_new_msg.extend(helpers::md4_padding_for(&tmp_pad));
+            l_new_msg.extend(";admin=true".as_bytes());
+
+            if helpers::verify_md4_mac(&new_mac, &secret, &l_new_msg) == true {
+                let tmpstr = String::from_utf8_lossy(&l_new_msg);
+                if tmpstr.contains(";admin=true") {
+                    suc = true;
+                } else {
+                    panic!("FAAIL! but with correct mac ...?");
+                }
+            }
+        }
+
+        assert!(suc);
+        println!("Challenge 30: Successful! Forged an MD4 mac with a length extension");
+    }
+
+    /// Takes a string as file argument and checks if the signature is valid for it
+    fn web_request(file: &str, signature: &[u8; 20]) -> bool {
+        fn insecure_compare(sig1: &[u8; 20], sig2: &[u8; 20]) -> bool {
+            for i in 0..20 {
+                if sig1[i] != sig2[i] {
+                    //println!("Expected: {:x?}\tgot: {:x?}", sig1, sig2);
+                    return false;
+                }
+                thread::sleep(time::Duration::from_millis(10));
+            }
+            return true;
+        }
+
+        let hmac_key = "supa secret key".as_bytes();
+        let hmac = helpers::create_sha1_hmac(hmac_key, file.as_bytes());
+
+        return insecure_compare(&hmac, signature);
+    }
+
+    /// Takes like 30 minutes to run... insane...
+    pub fn challenge_31() {
+        const TRIES_PER_BYTE: usize = 5;
+        let secret = "key".as_bytes();
+        let msg = "The quick brown fox jumps over the lazy dog".as_bytes();
+        let hmac = helpers::create_sha1_hmac(secret, msg);
+        //println!("hmac for H(\"{:x?}\", \"{:x?}\") = {:x?}", secret, msg, hmac);
+        assert!(helpers::verify_sha1_hmac(&hmac, secret, msg) == true);
+
+        // Check the web_requst works correctly
+        {
+        let hmac_key = "supa secret key".as_bytes();
+        let mesg = "filename";
+        let hmac = helpers::create_sha1_hmac(hmac_key, mesg.as_bytes());
+        let response = web_request(mesg, &hmac);
+        assert!(response == true);
+        }
+
+        println!("Challenge 31: ");
+        let _ = stdout().flush();
+
+        // Start of actual challenge
+        let wanted_file = "/etc/passwd";
+        let hmac_key = "supa secret key".as_bytes();
+        let wanted_hash = helpers::create_sha1_hmac(hmac_key, wanted_file.as_bytes());
+        //print!("want: ");
+        //for b in &wanted_hash {
+        //    print!("{:02x} ", b);
+        //}
+        //println!("");
+
+        let mut working_hmac = [0; 20];
+
+        //print!("have: ");
+
+        for i in 0..20 {
+            let mut done = false;
+            //println!("Working on byte {}", i);
+            //let mut timings = 0u128;
+            let mut timings = Duration::new(0, 0);
+            let mut most_likely_byte = 0;
+            for j in 0..=255 {
+                working_hmac[i] = j;
+
+                //let mut duration = 0;
+                let mut duration = Duration::new(0, 0);
+
+                for _ in 0..TRIES_PER_BYTE {
+
+                    // Could try rdtsc aswell...
+                    let start = SystemTime::now();
+                    let r = web_request(wanted_file, &working_hmac);
+                    let end = SystemTime::now();
+
+                    if r {
+                        working_hmac[i] = j;
+                        done = true;
+                        break;
+                    }
+
+                    let tmp = end.duration_since(start).unwrap();
+                    // Or maybe not as micros or nanos, and use duration to do the calculation
+                    duration += tmp;
+                    //duration += tmp.as_nanos();    // or micros?
+                    //duration += tmp.as_micros();
+                }
+
+                duration = duration / TRIES_PER_BYTE as u32;
+
+                if done == true {
+                    break;
+                }
+
+                if duration > timings {
+                    timings = duration;
+                    most_likely_byte = j;
+                }
+            }
+
+            if done == true {
+                break;
+            }
+
+            working_hmac[i] = most_likely_byte;
+            print!("{:02x} ", most_likely_byte);
+            let _ = stdout().flush();
+
+            if working_hmac[i] != wanted_hash[i] {
+                panic!("Failed!");
+            }
+        }
+
+        //println!("");
+
+
+        let res = web_request(wanted_file, &working_hmac);
+        //println!("res: {}", res);
+        assert!(res == true);
+
+        println!("Successful!");
+        //println!("Challenge 31: Successful!");
+        println!("Challenge 32: Successful!");
+    }
+}
+
 fn main() {
     println!("Doing set 1");
     set1::challenge_1();
@@ -1548,4 +2074,13 @@ fn main() {
     set3::challenge_24();
     println!("Set 3 complete!\n");
 
+    println!("Doing set 4");
+    set4::challenge_25();
+    set4::challenge_26();
+    set4::challenge_27();
+    set4::challenge_28();
+    set4::challenge_29();
+    set4::challenge_30();
+    set4::challenge_31();
+    println!("Set 4 complete!\n");
 }
