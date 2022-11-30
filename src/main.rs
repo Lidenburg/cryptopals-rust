@@ -1,3 +1,5 @@
+#![allow(non_snake_case)]
+
 mod helpers;
 
 #[derive(Debug)]
@@ -2041,7 +2043,701 @@ mod set4 {
     }
 }
 
+mod generic_kv_parse {
+    use std::collections::HashMap;
+    pub fn deserialize(serialized: &str) -> Option<HashMap<&str, String>> {
+        let mut serialized = serialized.clone();
+        let mut kvs = Vec::new();
+        //let mut prof: Profile = Profile{email: "".to_string(), uid: 0, role: "".to_string()};
+        let mut obj = HashMap::new();
+
+        loop {
+            let start = serialized.find("&");
+
+            let start = match start {
+                Some(val) => val,
+                None => {
+                    kvs.push(&serialized[..]);
+                    break;
+                },
+            };
+
+            kvs.push(&serialized[..start]);
+            serialized = &serialized[start+1..];
+        }
+        //println!("key value pairs: {:?}", kvs);
+
+        for item in kvs {
+            //println!("item: {}", item);
+            let name_offset = item.find("=");
+
+            let name_offset = if let Some(val) = name_offset {
+                val
+            } else {
+                panic!("AAAAHHH!!");
+            };
+
+            let name = &item[..name_offset];
+            //println!("name: {}", &name);
+
+            let value = &item[name_offset + 1..];
+
+
+            obj.insert(name, value.to_string());
+
+            //println!("value: {}\n", &item[name_offset + 1..]);
+        }
+
+        return Some(obj);
+    }
+
+    /*
+    pub fn serialize(prof: &Profile) -> String {
+        // No iterators for structs :(. Actually this is way more nice than an iterator.
+        format!("email={}&uid={}&role={}", prof.email, prof.uid, prof.role)
+    }
+    */
+
+    /*
+    /// Returns the serialized form of the Profile for the email
+    pub fn profile_for(email: &str) -> String {
+        let prof = Profile {
+            email: email.to_string(),
+            uid: 10,
+            role: "user".to_string(),
+        };
+
+        return serialize(&prof);
+    }
+
+    pub fn sanity_checks() {
+        // Some sanity checks
+        match deserialize("email=foo@bar.com&uid=10&role=user") {
+            //Some(_) => println!("correctly serialized object succeeded"),
+            Some(_) => (),
+            None => panic!("correctly formatted serialized object failed!"),
+        }
+        match deserialize("email=f=o@bar.com&uid=10&role=user") {
+            //Some(_) => panic!("incorrectly formatted serialized object succeeded!"),
+            Some(_) => panic!("incorrectly formatted serialized object succeeded!"),
+            None => (),
+        }
+        let serialized = "email=foo@bar.com&uid=10&role=user";
+        let prof = deserialize(serialized);
+        let prof = match prof {
+            Some(val) => val,
+            None => panic!("failed deserializing"),
+        };
+        let round_trip = serialize(&prof);
+        //println!("round_trip: {}", round_trip);
+        assert!(serialized == &round_trip);
+    }
+    */
+}
+
+mod set5 {
+    use num_bigint::{BigUint, RandomBits};
+    use rand::{Rng, RngCore};
+    use super::helpers;
+    use std::convert::TryInto;
+    use super::generic_kv_parse;
+
+    fn basic_dh() {
+        let p = 37u64;
+        let g = 5u64;
+
+        //let a = rand::random::<u32>() % p as u32;
+        let a = 7;
+        let A = g.checked_pow(a).unwrap() % p;
+        //println!("random number a: {}", a);
+        //println!("A: {}", A);
+
+        //let b = rand::random::<u32>() % p as u32;
+        let b = 11;
+        let B = g.checked_pow(b).unwrap() % p;
+        //println!("random number b: {}", b);
+        //println!("B: {}", B);
+
+        let s1 = B.checked_pow(a).unwrap() % p;
+        let s2 = A.checked_pow(b).unwrap() % p;
+
+        assert!(s1 == s2, "basic DH logic failed! s1({}) != s2({})", s1, s2);
+
+        //println!("shared secret: {}", s1);
+
+        let s_key = helpers::sha1sum(&s1.to_le_bytes());
+
+        //println!("shared session key: {:x?}", s_key);
+    }
+
+    fn gen_privkey() -> BigUint {
+        let mut rng = rand::thread_rng();
+
+        rng.sample(RandomBits::new(1024))
+    }
+
+    fn get_pubkey(p: &BigUint, g: &BigUint, a: &BigUint) -> BigUint {
+        g.modpow(a, p) // A = (g**a) % p
+    }
+
+    fn gen_shared_session_key(A: &BigUint, b: &BigUint, p: &BigUint) -> [u8; 16] {
+        let s = A.modpow(b, p);
+
+        helpers::sha1sum(&s.to_bytes_le())[0..16].try_into().unwrap()
+    }
+
+    const P_STR: &[u8; 384] = b"ffffffffffffffffc90fdaa22168c234c4c6628b80dc1cd129024\
+                    e088a67cc74020bbea63b139b22514a08798e3404ddef9519b3cd\
+                    3a431b302b0a6df25f14374fe1356d6d51c245e485b576625e7ec\
+                    6f44c42e9a637ed6b0bff5cb6f406b7edee386bfb5a899fa5ae9f\
+                    24117c4b1fe649286651ece45b3dc2007cb8a163bf0598da48361\
+                    c55d39a69163fa8fd24cf5f83655d23dca3ad961c62f356208552\
+                    bb9ed529077096966d670c354e4abc9804f1746c08ca237327fff\
+                    fffffffffffff";
+
+    pub fn challenge_33() {
+        basic_dh();
+
+        let p = BigUint::parse_bytes(P_STR, 16).unwrap();
+        let g = BigUint::from(2u32);
+
+        //println!("p: {:x}", p);
+
+        let a = gen_privkey();
+        let A = get_pubkey(&p, &g, &a);
+
+        let b = gen_privkey();
+        let B = get_pubkey(&p, &g, &b);
+
+        //println!("pubkey A: {:x}", A);
+        //println!("pubkey B: {:x}", B);
+
+        let s1 = gen_shared_session_key(&A, &b, &p);
+        let s2 = gen_shared_session_key(&B, &a, &p);
+
+        assert!(s1 == s2, "s1 != s2");
+        println!("Challenge 33: Successful!");
+    }
+
+    #[derive(Debug, PartialEq)]
+    enum WhichSide {
+        A,
+        B,
+        Undef,
+    }
+
+    struct Chall2Ctx {
+        privkey: BigUint,
+        pubkey: BigUint,
+        p: BigUint,
+        g: BigUint,
+
+        session_key: Option<[u8; 16]>,
+        side: WhichSide,
+        other_side_pubkey: Option<BigUint>,
+    }
+
+    impl Default for Chall2Ctx {
+        fn default() -> Self {
+            let privkey = gen_privkey();
+            let p = BigUint::parse_bytes(P_STR, 16).unwrap();
+            let g = BigUint::from(2u32);
+            let pubkey = get_pubkey(&p, &g, &privkey);
+            let other_side_pubkey = None;
+
+            Self {privkey, pubkey, p, g, session_key: None, side: WhichSide::A, other_side_pubkey}
+        }
+    }
+
+    impl Chall2Ctx {
+        fn new_from_a_stage_1(a_stage_1_res: Vec<&BigUint>) -> Self {
+            let p = a_stage_1_res[0].clone();
+            let g = a_stage_1_res[1].clone();
+            let other_side_pubkey = a_stage_1_res[2].clone();
+            let privkey = gen_privkey();
+            let pubkey = get_pubkey(&p, &g, &privkey);
+
+            Self {privkey, pubkey, p, g, session_key: None, side: WhichSide::B, other_side_pubkey: Some(other_side_pubkey)}
+        }
+
+        /// A->B: Send "p", "g", "A"
+        /// .0 = p .1 = g .2 = A
+        fn a_stage_1(&self) -> Vec<&BigUint> {
+            vec!(&self.p, &self.g, &self.pubkey)
+        }
+
+        /// B->A: Send "B"
+        fn b_stage_1(&self) -> Vec<&BigUint> {
+            vec!(&self.pubkey)
+        }
+
+        fn decrypt_msg(key: &[u8], msg: &Vec<u8>) -> Result<Vec<u8>, String> {
+            let veclen = msg.len();
+            let iv = &msg[veclen-16..];
+            helpers::aes_128_cbc_decrypt(&msg[0..veclen-16], &key, iv)
+        }
+
+        /// A->B: Send AES-CBC(SHA1(s)[0:16], iv=random(16), msg) + iv
+        fn send_msg(&mut self) -> Vec<u8> {
+            let sk = gen_shared_session_key(self.other_side_pubkey.as_ref().unwrap(), &self.privkey, &self.p);
+            self.session_key = Some(sk);
+
+            let mut iv = [0u8; 16];
+            rand::thread_rng().fill_bytes(&mut iv);
+
+            let mut enc = helpers::aes_128_cbc_encrypt(b"This is a test string", &sk, &iv);
+
+            enc.extend_from_slice(&iv);
+
+            enc
+        }
+
+        /// B->A: Send AES-CBC(SHA1(s)[0:16], iv=random(16), A's msg) + iv
+        fn echo_msg(&mut self, msg: &Vec<u8>) -> Vec<u8> {
+            let sk = gen_shared_session_key(self.other_side_pubkey.as_ref().unwrap(), &self.privkey, &self.p);
+            self.session_key = Some(sk);
+
+            let dec_data = Chall2Ctx::decrypt_msg(&sk, &msg).unwrap();
+
+            let mut new_iv = [0u8; 16];
+            rand::thread_rng().fill_bytes(&mut new_iv);
+
+            let mut enc_data = helpers::aes_128_cbc_encrypt(&dec_data, &sk, &new_iv);
+
+            enc_data.extend_from_slice(&new_iv);
+            enc_data
+        }
+
+        fn receive_echoed_msg(&self, msg: Vec<u8>) {
+            let dec_data = Chall2Ctx::decrypt_msg(self.session_key.as_ref().unwrap(), &msg).unwrap();
+            assert!(dec_data == b"This is a test string".to_vec());
+        }
+
+        fn stage_1(&self) -> Vec<&BigUint> {
+            if self.side == WhichSide::A {
+                return self.a_stage_1();
+            } else if self.side == WhichSide::B {
+                return self.b_stage_1();
+            } else {
+                panic!("side Undef in stage 1!!\n");
+            }
+        }
+
+        fn a_receive_msg(&mut self, msg: Vec<&BigUint>) {
+            self.other_side_pubkey = Some(msg[0].clone());
+            return;
+        }
+
+        fn b_receive_msg(&mut self, msg: Vec<&BigUint>) {
+            // A->B: Send "p", "g", "A"
+            self.p = msg[0].clone();
+            self.g = msg[1].clone();
+            self.other_side_pubkey = Some(msg[2].clone());
+            self.pubkey = get_pubkey(&self.p, &self.g, &self.privkey);
+            return;
+        }
+
+        fn receive_msg(&mut self, msg: Vec<&BigUint>) {
+            match self.side {
+                WhichSide::A => self.a_receive_msg(msg),
+                WhichSide::B => self.b_receive_msg(msg),
+                _ => panic!("side Undef in receive_msg!!\n"),
+            }
+        }
+    }
+
+    pub fn challenge_34() {
+        let mut side_a = Chall2Ctx::default(); // side gets set to A by default
+        let mut side_b = Chall2Ctx::default();
+        side_b.side = WhichSide::B;
+
+        let hardcoded_key: [u8; 16] = helpers::sha1sum(&b"\x00"[..])[0..16].try_into().unwrap();
+
+        let msg = side_a.stage_1();
+        let mitm_p = msg[0].clone();
+        let msg = vec!(msg[0], msg[1], msg[0]);
+        side_b.receive_msg(msg);
+
+        let msg = side_b.stage_1();
+        let msg = vec!(&mitm_p);
+        side_a.receive_msg(msg);
+
+        // handshake is done now
+
+        let msg = side_a.send_msg();
+        let mitm_msg = Chall2Ctx::decrypt_msg(&hardcoded_key, &msg).unwrap();
+        assert!(mitm_msg == b"This is a test string".to_vec());
+        //println!("decrypted mitm msg: '{}'", String::from_utf8_lossy(&mitm_msg));
+
+        let msg = side_b.echo_msg(&msg);
+        let mitm_msg = Chall2Ctx::decrypt_msg(&hardcoded_key, &msg).unwrap();
+        assert!(mitm_msg == b"This is a test string".to_vec());
+        //println!("decrypted echo mitm msg: '{}'", String::from_utf8_lossy(&mitm_msg));
+        side_a.receive_echoed_msg(msg);
+
+        /*
+        // Non MITM version
+        let msg = side_a.stage_1();
+        side_b.receive_msg(msg);
+        let msg = side_b.stage_1();
+        side_a.receive_msg(msg);
+
+        // handshake is done now
+
+        let msg = side_a.send_msg();
+        let msg = side_b.echo_msg(&msg);
+        side_a.receive_echoed_msg(msg);
+        */
+
+        println!("Challenge 34: Successful!");
+    }
+
+    /// not gonna write all new code for the small change of sending an ACK
+    /// and THEN "A" instead of sending "A" right away.
+    pub fn challenge_35() {
+        for i in 0..3 {
+            let mut side_a = Chall2Ctx::default(); // side gets set to A by default
+            let mut side_b = Chall2Ctx::default();
+            side_b.side = WhichSide::B;
+
+            let hardcoded_g = match i {
+                0 => BigUint::from(1u32),
+                1 => side_a.p.clone(),
+                2 => side_a.p.clone() - 1u32,
+                _ => panic!("unreachable!"),
+            };
+
+            // hacky and ugly cause i dont want to rewrite the logic.
+            // still achieves the same effectively.
+            side_a.g = hardcoded_g.clone();
+            side_a.pubkey = get_pubkey(&side_a.p, &side_a.g, &side_a.privkey);
+
+            let msg = side_a.stage_1();
+
+            //let mitm_p = msg[0].clone();
+
+            let msg = vec!(msg[0], msg[1], msg[2]);
+            // "p" "g" "A"
+            side_b.receive_msg(msg);
+
+            let hardcoded_shared_secret = match i {
+                0 => hardcoded_g.clone(),
+                1 => BigUint::from(0u32), //side_a.p.clone(),
+                2 => hardcoded_g.clone(),
+                _ => panic!("unreachable!"),
+            };
+
+            let mut hardcoded_key: [u8; 16] = helpers::sha1sum(&hardcoded_shared_secret.to_bytes_le())[0..16].try_into().unwrap();
+
+            let msg = side_b.stage_1();
+            // "B"
+            side_a.receive_msg(msg);
+
+            // handshake is done now
+
+            let msg = side_a.send_msg();
+
+            if &hardcoded_g == &(&side_a.p - 1u32) {
+                // this case can be either p - 1 or 1 it depends on the secret
+                // try one and if that fails try the other
+                if let Ok(_) = Chall2Ctx::decrypt_msg(&hardcoded_key, &msg) {
+                    // Great we matched, nothing needs to be done
+                } else {
+                    // the decryption failed, which means the shared secret
+                    // was the other option
+                    hardcoded_key = helpers::sha1sum(&BigUint::from(1u32).to_bytes_le())[0..16].try_into().unwrap();
+                }
+            }
+
+            let mitm_msg = Chall2Ctx::decrypt_msg(&hardcoded_key, &msg).unwrap();
+            assert!(mitm_msg == b"This is a test string".to_vec());
+            //println!("decrypted mitm msg: '{}'", String::from_utf8_lossy(&mitm_msg));
+
+            let msg = side_b.echo_msg(&msg);
+            let mitm_msg = Chall2Ctx::decrypt_msg(&hardcoded_key, &msg).unwrap();
+            assert!(mitm_msg == b"This is a test string".to_vec());
+            //println!("decrypted mitm msg: '{}'", String::from_utf8_lossy(&mitm_msg));
+            side_a.receive_echoed_msg(msg);
+        }
+
+        
+        println!("Challenge 35: Successful!");
+    }
+
+    // the Option<> ones are the ones that will get sent by the other side
+    #[derive(Debug, PartialEq)]
+    struct SrpServer {
+        N: BigUint,
+        g: BigUint,
+        k: BigUint,
+        email: String,
+        salt: BigUint,
+        v: BigUint,
+        u: Option<BigUint>,
+        privkey: BigUint,
+        pubkey: BigUint,
+        other_side_pubkey: BigUint,
+        S: Option<BigUint>,
+        K: Option<[u8; 20]>,
+    }
+
+    impl SrpServer {
+        fn recv(&mut self, serd: String) {
+            let deserd = generic_kv_parse::deserialize(&serd).unwrap();
+
+            for (k, v) in deserd {
+                match k {
+                    //"email" => self.email = Some(v),
+                    "email" => self.email = v,
+                    "u" => self.u = Some(BigUint::parse_bytes(v.as_bytes(), 16).unwrap()),
+                    //"pubkey" => self.other_side_pubkey = Some(BigUint::parse_bytes(v.as_bytes(), 16).unwrap()),
+                    "pubkey" => self.other_side_pubkey = BigUint::parse_bytes(v.as_bytes(), 16).unwrap(),
+                    //"v" => self.v = Some(BigUint::parse_bytes(v.as_bytes(), 16).unwrap()),
+                    "v" => self.v = BigUint::parse_bytes(v.as_bytes(), 16).unwrap(),
+                    _ => panic!("unreachable!"),
+                }
+            }
+        }
+
+        fn register(email: &String, other_side_pubkey: &BigUint, salt: &BigUint, v: &BigUint) -> Self {
+            let N = BigUint::parse_bytes(P_STR, 16).unwrap();
+            let g = BigUint::from(2u32);
+            let k = BigUint::from(3u32);
+
+            let privkey = gen_privkey();
+            let pubkey = (&k * v) + &g.modpow(&privkey, &N);
+
+            let mut s = Self {
+                N,
+                g,
+                k,
+                email: email.clone(),
+                salt: salt.clone(),
+                v: v.clone(),
+                privkey,
+                pubkey,
+                other_side_pubkey: other_side_pubkey.clone(),
+                u: None,
+                S: None,
+                K: None,
+            };
+
+            s.set_u();
+            s
+        }
+
+        //fn login(email: &String, other_side_pubkey: &BigUint)
+
+        fn set_u(&mut self) {
+            //let mut tmp = self.other_side_pubkey.as_ref().unwrap().to_bytes_le();
+            let mut tmp = self.pubkey.to_bytes_le();
+            //tmp.extend(self.pubkey.to_bytes_le());
+            tmp.extend(self.other_side_pubkey.to_bytes_le());
+            let uH = helpers::sha1sum(&tmp);
+            self.u = Some(BigUint::from_bytes_le(&uH));
+        }
+
+        fn gen_shared_session_key(&mut self) {
+            let A = &self.other_side_pubkey;
+            let v = &self.v;
+            let u = self.u.as_ref().unwrap();
+            let privkey = &self.privkey;
+            let N = &self.N;
+            let v = &self.v;
+
+            let S = (A * v.modpow(u, N)).modpow(privkey, N);
+
+            let K = helpers::sha1sum(&S.to_bytes_le());
+            self.K = Some(K);
+
+            self.S = Some(S);
+        }
+
+        fn validate_hmac(&self, hmac: &[u8; 20]) -> bool {
+            let K = self.K.as_ref().unwrap();
+            let salt = self.salt.to_bytes_le();
+
+            helpers::verify_sha1_hmac(hmac, K, &salt)
+        }
+
+    }
+
+    // (most of) the Option<> ones are the ones that will get sent by the other side
+    #[derive(Debug, PartialEq)]
+    struct SrpClient {
+        N: BigUint,
+        g: BigUint,
+        k: BigUint,
+        privkey: BigUint,
+        pubkey: BigUint,
+        email: String,
+        password: String,
+        salt: BigUint,
+        u: Option<BigUint>,
+        other_side_pubkey: Option<BigUint>,
+        S: Option<BigUint>,
+        K: Option<[u8; 20]>,
+    }
+
+    impl Default for SrpClient {
+        fn default() -> Self {
+            let N = BigUint::parse_bytes(P_STR, 16).unwrap();
+            let g = BigUint::from(2u32);
+            let k = BigUint::from(3u32);
+            let email = "test@test.test".to_string();
+            let password = "test".to_string();
+            let salt = BigUint::from(0xdeadbeefu32);
+
+            let privkey = gen_privkey();
+            //let privkey = BigUint::from(7u32);
+            let pubkey = get_pubkey(&N, &g, &privkey);
+
+            Self {N, g, k, privkey, pubkey, email, password, salt, u: None,
+                other_side_pubkey: None, S: None, K: None}
+        }
+    }
+
+    impl SrpClient {
+        fn recv(&mut self, serd: String) {
+            let deserd = generic_kv_parse::deserialize(&serd).unwrap();
+
+            for (k, v) in deserd {
+                match k {
+                    "pubkey" => self.other_side_pubkey = Some(BigUint::parse_bytes(v.as_bytes(), 16).unwrap()),
+                    //"salt" => self.salt = Some(BigUint::parse_bytes(v.as_bytes(), 16).unwrap()),
+                    "salt" => self.salt = BigUint::parse_bytes(v.as_bytes(), 16).unwrap(),
+                    _ => panic!("unreachable!"),
+                }
+            }
+        }
+
+        fn gen_v(&mut self) -> BigUint {
+            let salt = BigUint::from(rand::random::<u32>());
+            self.salt = salt;
+
+            let mut tmp = self.salt.to_bytes_le();
+            tmp.extend_from_slice(&self.password.as_bytes());
+            let xH = helpers::sha1sum(&tmp);
+            let x = BigUint::from_bytes_le(&xH);
+            self.g.modpow(&x, &self.N)
+        }
+
+        fn set_u(&mut self) {
+            let mut tmp = self.other_side_pubkey.as_ref().unwrap().to_bytes_le();
+            tmp.extend(self.pubkey.to_bytes_le());
+            let uH = helpers::sha1sum(&tmp);
+            self.u = Some(BigUint::from_bytes_le(&uH));
+        }
+
+        fn gen_shared_session_key(&mut self) {
+            //use num_traits::Pow;
+            let mut tmp = self.salt.to_bytes_le();
+            tmp.extend_from_slice(self.password.as_bytes());
+            let xH = helpers::sha1sum(&tmp);
+            let x = BigUint::from_bytes_le(&xH);
+
+            let B = self.other_side_pubkey.as_ref().unwrap();
+            let k = &self.k;
+            let g = &self.g;
+            let N = &self.N;
+            let privkey = &self.privkey;
+            let u = self.u.as_ref().unwrap();
+
+            let S = (B - (k * g.modpow(&x, N))).modpow(&(privkey + (u*&x)), N);
+            let K = helpers::sha1sum(&S.to_bytes_le());
+            self.K = Some(K);
+
+            self.S = Some(S);
+        }
+
+        fn gen_hmac(&self) -> [u8; 20] {
+            let K = self.K.as_ref().unwrap();
+            let salt = self.salt.to_bytes_le();
+
+            helpers::create_sha1_hmac(K, &salt)
+        }
+    }
+
+    pub fn challenge_36() {
+        let mut c = SrpClient {email: "test@test.com".to_string(), password: "password".to_string(), ..Default::default()};
+        let v = c.gen_v();
+
+        let mut s = SrpServer::register(&c.email, &c.pubkey, &c.salt, &v);
+
+        // to begin authentication the client sends the email and pubkey
+        s.recv(format!("email={}&pubkey={:x}", &c.email, &c.pubkey));
+
+        // the server then responds with the salt and its pubkey
+        c.recv(format!("salt={:x}&pubkey={:x}", &s.salt, &s.pubkey));
+
+        // Both server and client create an integer out of the combined
+        // public keys
+        s.set_u();
+        c.set_u();
+        assert!(s.u == c.u, "server and client u differs!");
+
+        // Both server and client generate the shared secret and make a session key
+        c.gen_shared_session_key();
+        s.gen_shared_session_key();
+        assert!(c.S == s.S, "Client and Server session keys differ!");
+
+        let hmac = c.gen_hmac();
+        assert!(s.validate_hmac(&hmac) == true);
+
+        println!("Challenge 36: SRP Successful!");
+        return;
+    }
+
+    pub fn challenge_37() {
+        let mut A_vals = vec!(BigUint::from(0u32), BigUint::parse_bytes(P_STR, 16).unwrap());
+        A_vals.push(&A_vals[1] * 2u32);
+        A_vals.push(&A_vals[2] * 2u32);
+        A_vals.push(&A_vals[3] * 2u32);
+
+        for i in 0..A_vals.len() {
+            let mut c = SrpClient {email: "test@test.com".to_string(), password: "password".to_string(), ..Default::default()};
+            let v = c.gen_v();
+            let mut s = SrpServer::register(&c.email, &c.pubkey, &c.salt, &v);
+
+            c.password = "wrongpassword".to_string();
+            c.pubkey = BigUint::from(0u32);
+
+            // to begin authentication the client sends the email and pubkey
+            s.recv(format!("email={}&pubkey={:x}", &c.email, &c.pubkey));
+
+            // the server then responds with the salt and its pubkey
+            c.recv(format!("salt={:x}&pubkey={:x}", &s.salt, &s.pubkey));
+
+            // Both server and client create an integer out of the combined
+            // public keys
+            s.set_u();
+            c.set_u();
+            assert!(s.u == c.u, "server and client u differs!");
+
+            // Both server and client generate the shared secret and make a session key
+            //c.gen_shared_session_key();
+            let zero = BigUint::from(0u32);
+            let sum = helpers::sha1sum(&zero.to_bytes_le());
+            c.K = Some(sum);
+            c.S = Some(BigUint::from(0u32));
+
+            s.gen_shared_session_key();
+            assert!(c.S == s.S, "Client and Server session keys differ!\nC: {:x}\nS: {:x}", c.S.unwrap(), s.S.unwrap());
+
+            let hmac = c.gen_hmac();
+            assert!(s.validate_hmac(&hmac) == true);
+        }
+
+        println!("Challenge 37: SRP without password succesful!");
+    }
+
+    pub fn challenge_38() {
+        return;
+    }
+}
+
 fn main() {
+
     println!("Doing set 1");
     set1::challenge_1();
     set1::challenge_2();
@@ -2084,4 +2780,11 @@ fn main() {
     set4::challenge_30();
     set4::challenge_31();   // Sloow
     println!("Set 4 complete!\n");
+
+    println!("Doing set 5");
+    set5::challenge_33();
+    set5::challenge_34();
+    set5::challenge_35();
+    set5::challenge_36();
+    set5::challenge_37();
 }
